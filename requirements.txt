@@ -1,7 +1,6 @@
 Flask
-werkzeug
+gunicorn
 xgboost
 scikit-learn
 pandas
 numpy
-gunicorn
