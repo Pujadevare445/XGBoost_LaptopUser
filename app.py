@@ -1,77 +1,103 @@
 import os
 import pickle
-import numpy as np
-from flask import Flask, render_template, request, jsonify
+import pandas as pd
+from flask import Flask, jsonify, request
 
-# Base directory setup
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE_DIR = os.path.join(BASE_DIR, 'templates')
+app = Flask(__name__)
 
-# Initialize Flask app
-app = Flask(__name__, template_folder=TEMPLATE_DIR)
+# Model configuration and loading
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "model.pkl")
+EXPECTED_FEATURES = ["Age", "Gender", "Region", "Occupation", "Income"]
 
-# Load the trained XGBoost model safely
-MODEL_PATH = os.path.join(BASE_DIR, 'XGBoost.pkl')
-
-try:
-    with open(MODEL_PATH, 'rb') as f:
-        model = pickle.load(f)
-    print("XGBoost model loaded successfully.")
-except FileNotFoundError:
-    print(f"ERROR: Model file not found at {MODEL_PATH}")
-    model = None
-except Exception as e:
-    print(f"ERROR loading model: {e}")
-    model = None
+model = None
 
 
-@app.route('/')
-def home():
-    return render_template('index.html')
+def load_model():
+    """Load binary model file safely upon application startup."""
+    global model
+    if os.path.exists(MODEL_PATH):
+        with open(MODEL_PATH, "rb") as f:
+            model = pickle.load(f)
+        print("Model successfully loaded from disk.")
+    else:
+        print(f"Warning: Model file not found at '{MODEL_PATH}'. "
+              "Inference requests will fail until present.")
 
 
-@app.route('/predict', methods=['POST'])
+@app.route("/health", methods=["GET"])
+def health_check():
+    """Health check endpoint."""
+    return jsonify({
+        "status": "healthy",
+        "model_loaded": model is not None
+    }), 200
+
+
+@app.route("/predict", methods=["POST"])
 def predict():
+    """
+    Prediction Endpoint
+
+    Expects JSON input:
+    {
+        "Age": 30,
+        "Gender": 1,
+        "Region": 2,
+        "Occupation": 4,
+        "Income": 55000
+    }
+
+    Or a list of dicts for batch predictions.
+    """
     if model is None:
-        return jsonify({
-            'success': False,
-            'error': 'Model file is missing or failed to load on the server.'
-        }), 500
+        return jsonify({"error": "Model is not loaded on server."}), 500
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid or missing JSON payload"}), 400
+
+    # Ensure single item is handled gracefully alongside lists
+    is_single_record = False
+    if isinstance(data, dict):
+        data = [data]
+        is_single_record = True
 
     try:
-        # Extract features from form submission
-        age = float(request.form.get('age', 0))
-        gender = int(request.form.get('gender', 0))
-        region = int(request.form.get('region', 0))
-        occupation = int(request.form.get('occupation', 0))
-        income = float(request.form.get('income', 0))
+        # Convert incoming payload to pandas DataFrame
+        df = pd.DataFrame(data)
 
-        # Array shape: (1, 5) matching model input requirement
-        input_data = np.array([[age, gender, region, occupation, income]])
+        # Handle feature validation (stripping BOM chars if present in raw metadata)
+        df.columns = df.columns.str.replace("\ufeff", "")
 
-        # Get prediction
-        prediction = model.predict(input_data)[0]
+        # Missing column check
+        missing_cols = [col for col in EXPECTED_FEATURES if col not in df.columns]
+        if missing_cols:
+            return jsonify({
+                "error": "Missing required feature columns",
+                "missing_columns": missing_cols
+            }), 400
 
-        # Get probability if supported
-        if hasattr(model, "predict_proba"):
-            probability = float(model.predict_proba(input_data)[0][1]) * 100
-        else:
-            probability = None
+        # Filter and reorder columns matching trained XGBoost sequence
+        df_inference = df[EXPECTED_FEATURES].astype(int)
 
-        result_text = "Positive" if int(prediction) == 1 else "Negative"
+        # Perform predictions
+        predictions = model.predict(df_inference).tolist()
+        probabilities = model.predict_proba(df_inference)[:, 1].tolist()
 
-        return jsonify({
-            'success': True,
-            'prediction': int(prediction),
-            'result_text': result_text,
-            'probability': round(probability, 2) if probability is not None else "N/A"
-        })
+        # Format output
+        results = [
+            {"prediction": int(pred), "probability": float(prob)}
+            for pred, prob in zip(predictions, probabilities)
+        ]
+
+        output = results[0] if is_single_record else results
+        return jsonify({"status": "success", "data": output}), 200
 
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 400
+        return jsonify({"error": f"An error occurred during prediction: {str(e)}"}), 500
 
 
-if __name__ == '__main__':
-    # Binds dynamically to Render's PORT or defaults to 5000 locally
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+if __name__ == "__main__":
+    load_model()
+    # Run server
+    app.run(host="0.0.0.0", port=5000, debug=True)
