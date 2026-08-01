@@ -1,4 +1,5 @@
-flask
+Flask
+werkzeug
 xgboost
 scikit-learn
 pandas
