@@ -3,5 +3,4 @@ xgboost
 scikit-learn
 pandas
 numpy
-pydantic
 gunicorn
