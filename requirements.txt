@@ -1,5 +1,6 @@
-Flask
+flask
 xgboost
 scikit-learn
+pandas
 numpy
-gunicorn
+pydantic
