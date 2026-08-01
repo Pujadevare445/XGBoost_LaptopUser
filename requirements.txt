@@ -1,4 +1,5 @@
 Flask
 xgboost
-numpy
 scikit-learn
+numpy
+gunicorn
